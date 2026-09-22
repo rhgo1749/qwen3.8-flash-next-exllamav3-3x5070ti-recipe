@@ -1,0 +1,225 @@
+# Optimization log
+
+This is the chronological reasoning behind the promoted recipe.
+
+## 0. Starting point: an apparent ~72–75 tok/s wall
+
+Three RTX 5070 Ti GPUs were serving Qwen3.8-Flash-Next EXL3 3.05 bpw with part of each MoE layer on CPU.
+
+Early concurrent decode repeatedly landed around 72–75 tok/s aggregate, which initially looked close to a hardware ceiling.
+
+GPU telemetry disproved that interpretation later: even during concurrent decode, the GPUs were frequently far below full SM, memory-controller and power utilization. The real ceiling was software/data movement, not raw GPU silicon.
+
+## 1. Find the CPU-MoE leak
+
+The model has 512 routed experts per layer and activates 10 per token.
+
+With 232 experts on CPU and 280 on GPU, the important question is not only "how many experts fit on GPU?" but **which 280 experts are resident**.
+
+A routing histogram from real agent traffic showed that the original physical tail split was poor:
+
+```text
+current CPU hit ~45.17%
+ideal CPU hit   ~12.06%
+```
+
+That meant the machine was paying CPU/GPU handoff cost far more often than necessary even though the number of GPU slots was fixed.
+
+### Decision
+
+Collect expert popularity from representative workload, sort experts hot-to-cold per layer, freeze the permutation, and disable dynamic swapping during production.
+
+This became the dominant optimization.
+
+## 2. MTP had the same problem
+
+The MTP component has its own MoE layer and its routing was also badly aligned with the resident expert set.
+
+Passive sampling was added before the fused CPU split submit path because the earlier hook missed decode traffic.
+
+Measured before/after target:
+
+```text
+MTP current CPU hit ~44.3%
+MTP hot target       ~7.5%
+```
+
+After this correction, MTP3 became much more attractive.
+
+## 3. Revisit the speculative draft length
+
+### MTP1
+
+High acceptance, but the measurement was from the pre-hot-placement era.
+
+### MTP2
+
+We expected MTP2 to become interesting if weighted acceptance climbed into roughly the 65–70% range.
+
+It did not. A real three-request overlap reached about 72.4 tok/s aggregate and MTP2 was rejected.
+
+### MTP3
+
+Best tested real-workload point after hot placement.
+
+### MTP4
+
+Two problems:
+
+1. placement/cache workspace increased enough to violate the desired GPU0 headroom at the original split;
+2. real traffic did not outperform MTP3.
+
+MTP3 was retained.
+
+## 4. CPU-MoE worker thread count
+
+The CPU worker was instrumented with ExLlamaV3's handoff/GEMV profiling.
+
+At 24 threads:
+
+```text
+gemv_gu ~0.98 ms
+gemv_d  ~0.49 ms
+```
+
+16 threads was slower. 32 threads was substantially slower.
+
+The one-layer MTP worker behaved differently: keeping it at 16 threads avoided extra contention with the 48-layer main worker.
+
+The final asymmetry is deliberate:
+
+```text
+main worker = 24
+MTP worker  = 16
+```
+
+## 5. Check whether CPU power/thermals were the problem
+
+The 9950X3D sustained roughly 5.25–5.50 GHz in the observed workload and did not show a thermal-limit pattern. Temperatures were also well below a thermal ceiling.
+
+That shifted attention away from CPU power settings and toward:
+
+- actual GEMV latency
+- routing frequency
+- scheduling gaps
+- CPU/GPU overlap
+
+## 6. Try to buy more GPU-resident experts
+
+Histogram math said dropping from CPU232 to CPU224 would reduce CPU hit further.
+
+But real loader tests at the 524k cache budget showed:
+
+```text
+CPU232: fits
+CPU228: loader VRAM failure
+CPU224: loader VRAM failure
+```
+
+So CPU232 is effectively the residency boundary for this exact cache/split configuration.
+
+## 7. Stage rebalance did not fit
+
+GPU2 was often the busiest stage, so we tried moving budget from GPU2 to GPU1 while keeping GPU0 fixed:
+
+```text
+[11,15.5,14.5]   fail
+[11,15.25,14.75] fail
+```
+
+The placement boundary is module-granular, not infinitely divisible. These small numeric changes could not create a valid better partition.
+
+## 8. Find the missing layer 47 profile
+
+The first static histogram had layers 0–46. Layer 47 silently remained on the original unpermuted tail.
+
+A dedicated passive collection showed:
+
+```text
+layer 47 current CPU hit ~42.8%
+layer 47 hot target       ~7.4%
+```
+
+Adding it was clearly correct, although the end-to-end improvement was much smaller than the original bulk hot-placement gain.
+
+## 9. Kernel threshold sweep: the dangerous natural-traffic false positive
+
+Natural agent traffic initially suggested:
+
+```text
+N threshold 1024 >> 2048 / 4096
+```
+
+That looked exciting but did not make architectural sense.
+
+We inspected the actual projection widths and ExLlamaV3's `use_mgemm()` decision:
+
+```text
+attention slice = 512
+MoE gate/up     = 640
+GDN slice       = 2048
+```
+
+Thresholds 1024 and 2048 therefore make the same decisions for those relevant widths. The apparent difference had to be workload noise.
+
+This was the point where we stopped trusting natural traffic for the kernel question and built a controlled C3 harness.
+
+## 10. Controlled boundary test
+
+A clean threshold boundary exists at 2048/2049 because the heuristic is strict:
+
+```text
+fuse when out_features < threshold
+```
+
+So:
+
+```text
+threshold 2048 -> GDN width 2048 is unfused
+threshold 2049 -> GDN width 2048 is fused
+```
+
+We crossed that with activation INT8 on/off.
+
+Three controlled C3 repetitions per cell produced:
+
+```text
+2049 + INT8=2: 112.3 tok/s
+2048 + INT8=2: 109.4 tok/s
+2048 + INT8=0: 120.4 tok/s  <-- winner
+2049 + INT8=0: 112.8 tok/s
+```
+
+This result is more useful than the earlier natural-workload threshold sweep because:
+
+- same prompt
+- same cache state after warmup
+- same output length
+- same concurrency
+- same model/runtime/hardware
+- only the two kernel-policy variables change
+
+## 11. Final promoted profile
+
+```text
+MTP3
+gpu_split [11,15,15]
+CPU experts 232
+main CPU-MoE threads 24
+MTP CPU-MoE threads 16
+static hot-expert placement including layer 47
+MGEMM N threshold 2048
+INT8 activation GEMV 0
+```
+
+## 12. Interpretation
+
+The original ~72–75 tok/s wall was not a GPU hardware ceiling.
+
+The largest problem was **unnecessary CPU expert traffic**. Once that was reduced, smaller runtime choices became visible and worth measuring.
+
+The final controlled C3 result around 120 tok/s should not be described as universal production sustained throughput. Real mixed agent traffic still varies with prefill, cache state, output length and draft acceptance.
+
+The useful conclusion is narrower:
+
+> On this exact 3×5070 Ti / Qwen3.8-Flash-Next EXL3 3.05 bpw setup, software placement and kernel policy left a large amount of performance on the table. Careful routing and controlled A/B testing recovered much of it without changing model bpw or KV precision.
