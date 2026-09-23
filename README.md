@@ -111,6 +111,8 @@ After expert placement, MTP tuning, CPU thread tuning and the final kernel polic
 - controlled C3, promoted policy: **120.4 tok/s average aggregate TG**
 - historical real-workload peak observed during optimization: about **119 tok/s**
 
+The real-workload figures above come from an **actual Hermes workload**. The controlled C1/C2/C3 figures use this repository's own fixed warm-cache serving benchmark. ExLlamaV3's upstream `eval/perf.py` benchmark has **not yet been run** on this setup, so these numbers should not be treated as directly comparable to upstream `eval/perf.py` results.
+
 The controlled result is intentionally reported separately from production sustained throughput. A fixed warm-cache benchmark is much cleaner than a real agent workload with variable prompt lengths, prefix-cache state, draft acceptance and overlapping prefill.
 
 ## Why this configuration works
