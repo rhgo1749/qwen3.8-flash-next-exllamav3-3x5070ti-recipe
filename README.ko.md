@@ -28,20 +28,43 @@
 - cache mode `8,4`
 - MTP 활성화, draft token 3개
 
-최종 채택 설정:
+레시피에는 3-GPU 모드를 두 가지로 유지합니다. 기본은 **성능 우선 모드**, 대안은 GPU0에 수 GiB의 여유 VRAM을 남기는 **헤드룸 확보 모드**입니다.
+
+성능 우선 모드 (`recipe/tabby_config.yml`):
+
+```text
+gpu_split                  = [15.0, 15.0, 14.0]
+cpu_moe_split_experts      = 208
+cpu_moe_threads            = 24
+ngram_ram                  = false
+
+draft_mode                 = mtp
+draft_gpu_split            = [0, 0, 3]
+draft_num_tokens           = 3
+dynamic_draft              = true
+draft_confidence           = 0.4
+```
+
+헤드룸 확보 모드 (`recipe/tabby_config.headroom.yml`):
 
 ```text
 gpu_split                  = [11.0, 15.0, 15.0]
 cpu_moe_split_experts      = 232
 cpu_moe_threads            = 24
+ngram_ram                  = false
 
 draft_mode                 = mtp
 draft_gpu_split            = [3, 0, 0]
 draft_num_tokens           = 3
+dynamic_draft              = true
+draft_confidence           = 0.4
+```
 
+두 모드 모두 아래 runtime policy를 공유합니다.
+
+```text
 EXL3_MOE_CPU_SWAP          = 0
 EXL3_MOE_CPU_SPLIT_STATS   = /path/to/routing-stats.json
-
 EXL3_MGEMM_N_THRESHOLD     = 2048
 EXL3_INT8_GEMV             = 0
 ```
@@ -64,6 +87,16 @@ MTP CPU-MoE         16 worker threads
 ```
 
 24/16 worker split은 서빙 레시피의 일부입니다. BIOS/RAM 값은 해당 호스트의 실측 조건이지 모든 시스템의 보편적 최적값이라는 뜻은 아닙니다.
+
+### 최종 promotion의 VRAM / RAM / SSD 요구사항
+
+2026-09-24 실측으로 용량 요구가 크게 바뀌었습니다.
+
+- **VRAM:** 검증된 요구사항은 **16 GB GPU ×3**입니다. clean load 직후 RTX 5070 Ti 3장의 사용량은 약 **14,456 / 14,746 / 15,240 MiB**였습니다.
+- **System RAM:** **128 GB는 실측 검증됨**. PLE를 명시적 RAM 상주에서 제외한 뒤 live container는 약 **33.52 GiB**, host 전체 used는 약 **41 GiB**였습니다. 따라서 **96 GB+를 실용 권장치**로 보고, **64 GB는 미검증이며 CPU208 + 24 GiB host reserve를 고려하면 빡빡한 용량**으로 봅니다.
+- **SSD:** local model directory가 약 **88 GB**, 그중 PLE n-gram table이 약 **31 GB**입니다. **빈 공간 100 GB 최소, 120 GB+ 권장**, NVMe 사용을 권장합니다. 검증 호스트는 Crucial T710 NVMe를 사용했습니다. PCIe 4.0 x4급 이상을 합리적 목표로 보지만, 최소 SSD 등급 자체를 별도로 A/B한 것은 아닙니다.
+
+세부 실측과 주의사항은 [`docs/resource-requirements.md`](docs/resource-requirements.md)에 정리했습니다.
 
 ## 주요 결과
 
@@ -119,12 +152,15 @@ MTP1/2/3/4를 모두 테스트했습니다.
 - **MTP3-hot: 최종 채택**
 - MTP4: VRAM/headroom 비용이 커지고 실전 aggregate도 MTP3보다 낮았음
 
-최종 설정:
+MTP3는 최종 **ceiling**으로 유지하되, mixed workload 기본값은 confidence 기반 dynamic truncation으로 바뀌었습니다.
 
 ```yaml
 draft_num_tokens: 3
-dynamic_draft: false
+dynamic_draft: true
+draft_confidence: 0.4
 ```
+
+142-token prompt의 짧은 C3 steady-state 실측에서는 fixed MTP3가 **132.6 tok/s aggregate**, dynamic 0.4가 **151.9 tok/s**, dynamic 0.6이 **129.7 tok/s**였습니다. 40k long-context에서는 run-to-run acceptance variance 안에 머물렀으므로, 이 값은 mixed-workload 기본 정책이지 dynamic이 모든 긴 요청에서 항상 빠르다는 뜻은 아닙니다.
 
 ### 3. CPU MoE thread 수
 
@@ -251,8 +287,8 @@ server-side ExLlamaV3/Tabby log에서 각 request의 TG를 확인하고, 해당 
 - base CPU-MoE 16 threads: 느림
 - base CPU-MoE 32 threads: 훨씬 느림
 - MTP CPU-MoE 24 threads: contention으로 악화
-- CPU expert split 228/224: 524k cache budget에서 load 실패
-- `gpu_split [11,15.5,14.5]`: module/VRAM boundary에서 실패
+- 과거 `[11,15,15]` + GPU0 MTP 배치에서는 CPU expert split 228/224도 load 실패했지만, 이후 MTP를 GPU2로 옮기고 `[15,15,14]`로 재배치해 **CPU208**까지 fit
+- `gpu_split [11,15.5,14.5]`: 과거 module/VRAM boundary에서 실패
 - `gpu_split [11,15.25,14.75]`: 동일
 - `MGEMM_N_THRESHOLD=0`: 실전 workload에서 좋지 않거나 noise가 큼
 - promoted unfused GDN path에서 INT8 activation GEMV: controlled C3에서 더 느림
@@ -260,15 +296,21 @@ server-side ExLlamaV3/Tabby log에서 각 request의 TG를 확인하고, 해당 
 
 자세한 순서와 측정은 `docs/optimization-log.md` 참고.
 
-## GPU0 headroom은 의도적
+## 현재 3-GPU residency 경계
 
-GPU0는 일부러 11 GB로 제한했습니다.
+최종 promotion split은 다음과 같습니다.
 
 ```yaml
-gpu_split: [11.0, 15.0, 15.0]
+gpu_split: [15.0, 15.0, 14.0]
+cpu_moe_split_experts: 208
+draft_gpu_split: [0, 0, 3]
 ```
 
-순수 최대 throughput만을 위한 설정이 아닙니다. GPU0에 VRAM을 몇 GiB 의도적으로 남겨두므로, 해당 GPU에 모니터를 연결하거나 desktop/OS workload도 함께 처리하는 시스템에 유리합니다. GPU0를 완전히 headless로만 사용하는 시스템이라면 11/15/15를 그대로 복사하지 말고 split을 다시 탐색하는 편이 좋습니다.
+이 값은 **성능 우선 모드**입니다. 검증 호스트는 desktop을 iGPU로 출력하므로 RTX 5070 Ti 3장을 compute 전용으로 사용할 수 있습니다. clean load 기준 대략 14.1 / 14.4 / 14.9 GiB를 사용했고 세 번째 GPU가 가장 빡빡한 VRAM 경계였습니다.
+
+GPU0에 의도적으로 여유 VRAM이 필요한 시스템은 별도의 **헤드룸 확보 모드**인 `recipe/tabby_config.headroom.yml`을 사용하면 됩니다. 이 모드는 `[11,15,15]`, CPU232, MTP GPU0 배치를 유지하면서도 새로 채택한 SSD PLE 및 dynamic MTP 정책은 그대로 사용합니다.
+
+네 번째 RTX 5060 Ti는 최종 서버 구성에 포함하지 않습니다. 테스트한 PHB/no-P2P topology에서는 4번째 stage를 추가했을 때 expert residency가 늘어도 throughput이 오히려 내려갔습니다. 따라서 live promotion은 RTX 5070 Ti 3장만 노출합니다.
 
 ## 재현성 주의사항
 
@@ -295,7 +337,8 @@ gpu_split: [11.0, 15.0, 15.0]
 │   └── optimization-log.md
 ├── recipe/
 │   ├── env.sh.example
-│   └── tabby_config.yml
+│   ├── tabby_config.yml                 # 성능 우선 모드
+│   └── tabby_config.headroom.yml        # 헤드룸 확보 모드
 └── tools/
     └── moe_hist_probe/
         └── sitecustomize.py

@@ -28,20 +28,43 @@
 - cache mode `8,4`
 - 启用 MTP，3 个 draft tokens
 
-最终采用的配置:
+仓库保留两种 3-GPU 模式。默认是 **Performance mode**；如果需要在 GPU0 上保留数 GiB 空闲 VRAM，则使用 **Headroom-preserving mode**。
+
+Performance mode (`recipe/tabby_config.yml`):
+
+```text
+gpu_split                  = [15.0, 15.0, 14.0]
+cpu_moe_split_experts      = 208
+cpu_moe_threads            = 24
+ngram_ram                  = false
+
+draft_mode                 = mtp
+draft_gpu_split            = [0, 0, 3]
+draft_num_tokens           = 3
+dynamic_draft              = true
+draft_confidence           = 0.4
+```
+
+Headroom-preserving mode (`recipe/tabby_config.headroom.yml`):
 
 ```text
 gpu_split                  = [11.0, 15.0, 15.0]
 cpu_moe_split_experts      = 232
 cpu_moe_threads            = 24
+ngram_ram                  = false
 
 draft_mode                 = mtp
 draft_gpu_split            = [3, 0, 0]
 draft_num_tokens           = 3
+dynamic_draft              = true
+draft_confidence           = 0.4
+```
 
+两种模式共享以下 runtime policy:
+
+```text
 EXL3_MOE_CPU_SWAP          = 0
 EXL3_MOE_CPU_SPLIT_STATS   = /path/to/routing-stats.json
-
 EXL3_MGEMM_N_THRESHOLD     = 2048
 EXL3_INT8_GEMV             = 0
 ```
@@ -119,8 +142,11 @@ MTP hot-placement 目标: ~7.5% CPU hit
 
 ```yaml
 draft_num_tokens: 3
-dynamic_draft: false
+dynamic_draft: true
+draft_confidence: 0.4
 ```
+
+2026-09-24 更新后的资源要求（VRAM / RAM / NVMe，以及 PLE RAM-vs-SSD A/B）请参见 [`docs/resource-requirements.md`](docs/resource-requirements.md)。
 
 ### 3. CPU MoE thread 数
 
@@ -225,13 +251,17 @@ CONCURRENCY=3 python3 bench/controlled_c3.py
 - promoted unfused GDN path 上的 INT8 activation GEMV: controlled C3 更慢
 - 把一次自然 traffic 当作 proof: 多个 apparent win 在 controlled A/B 中消失
 
-## GPU0 headroom 是有意保留的
+## 两种 VRAM 模式
+
+默认 **Performance mode** 使用 `[15,15,14]` / CPU208 / MTP on GPU2。需要在 GPU0 上主动保留空闲 VRAM 时，请使用 `recipe/tabby_config.headroom.yml` 中的 **Headroom-preserving mode**。
 
 ```yaml
 gpu_split: [11.0, 15.0, 15.0]
+cpu_moe_split_experts: 232
+draft_gpu_split: [3, 0, 0]
 ```
 
-这不是纯最大吞吐量配置。该 split 会在 GPU0 上有意保留数 GiB VRAM，因此更适合 GPU0 同时承担显示输出或普通 desktop / OS workload 的系统。如果 GPU0 完全 headless 使用，不必照搬 11/15/15，可以重新搜索更激进的 split。
+该模式同样使用 NVMe/page cache PLE streaming 和 dynamic MTP 0.4。
 
 ## 可复现性说明
 

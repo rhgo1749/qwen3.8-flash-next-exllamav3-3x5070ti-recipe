@@ -7,15 +7,14 @@ model:
   tensor_parallel: false
   gpu_split_auto: false
 
-  # Performance mode, validated on 3x RTX 5070 Ti 16 GB.
-  # The third GPU is the tightest device at roughly 15.2 GiB observed usage.
-  gpu_split: [15.0, 15.0, 14.0]
+  # Headroom-preserving mode: leave several GiB available on GPU0.
+  gpu_split: [11.0, 15.0, 15.0]
 
-  # 512 routed experts/layer, 304 GPU-resident + 208 CPU-resident.
-  cpu_moe_split_experts: 208
+  # 512 routed experts/layer, 280 GPU-resident + 232 CPU-resident.
+  cpu_moe_split_experts: 232
   cpu_moe_threads: 24
 
-  # Stream the ~31 GB PLE table from NVMe/page cache instead of pinning it in RAM.
+  # Stream the PLE n-gram table from NVMe/page cache instead of reserving ~31 GB RAM.
   ngram_ram: false
   chunk_size: 2048
   output_chunking: true
@@ -36,10 +35,9 @@ draft_model:
   draft_mode: mtp
   draft_cache_mode: "8,4"
 
-  # Place the MTP component on GPU2; this allowed the CPU expert split to reach 208.
-  draft_gpu_split: [0, 0, 3]
+  # Keep the MTP component in GPU0's reserved headroom.
+  draft_gpu_split: [3, 0, 0]
 
-  # MTP3 remains the ceiling; dynamic drafting trims low-value draft positions.
   draft_num_tokens: 3
   dynamic_draft: true
   draft_confidence: 0.4

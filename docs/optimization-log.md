@@ -203,16 +203,61 @@ This result is more useful than the earlier natural-workload threshold sweep bec
 
 ## 11. Final promoted profile
 
+The original promotion used the headroom-preserving `[11,15,15]` / CPU232 layout. A later 2026-09-24 pass moved the default performance mode to MTP on GPU2, increased base expert residency, moved PLE out of explicit RAM residency, and enabled confidence-calibrated dynamic drafting. The `[11,15,15]` layout remains available as the explicit headroom-preserving mode.
+
+Current promotion:
+
 ```text
-MTP3
-gpu_split [11,15,15]
-CPU experts 232
+MTP3 ceiling, dynamic drafting enabled
+MTP confidence 0.4
+gpu_split [15,15,14]
+draft_gpu_split [0,0,3]
+CPU experts 208
+GPU experts 304
 main CPU-MoE threads 24
 MTP CPU-MoE threads 16
+ngram_ram false
 static hot-expert placement including layer 47
 MGEMM N threshold 2048
 INT8 activation GEMV 0
+3-GPU-only live server
 ```
+
+### 11.1 PLE RAM vs NVMe evidence
+
+The promoted model directory is about 88 GB and the PLE table alone is about 31 GB. With `ngram_ram=false`, the live container used about 33.52 GiB host memory; the 128 GB validation host showed about 41 GiB used and 79 GiB available.
+
+A two-run 40k C3 comparison produced:
+
+```text
+PLE explicit RAM: 111.35 tok/s average aggregate
+PLE NVMe path:    110.4 tok/s average aggregate
+```
+
+The <1% difference was smaller than draft-acceptance variance, while cold-ish 40k prefill was effectively tied (~1.59k vs ~1.61k tok/s). The capacity win therefore outweighed the unproven sub-1% throughput difference, so `ngram_ram=false` was promoted.
+
+### 11.2 Dynamic MTP evidence
+
+Short 142-token-prompt C3 steady-state:
+
+```text
+fixed MTP3:                132.6 tok/s aggregate
+dynamic MTP3, conf 0.4:    151.9 tok/s aggregate
+dynamic MTP3, conf 0.6:    129.7 tok/s aggregate
+```
+
+Long 40k runs did not show a stable advantage beyond acceptance noise. The promoted interpretation is therefore workload-sensitive: confidence 0.4 is useful as a mixed-workload default because it can trim unproductive draft positions on short/low-acceptance requests without adding another model forward for the decision.
+
+### 11.3 Capacity contract after promotion
+
+```text
+VRAM:       3 x 16 GB validated; clean load 14,456 / 14,746 / 15,240 MiB
+RAM:        128 GB validated; 96 GB+ practical recommendation; 64 GB unvalidated/tight
+SSD:        ~88 GB model directory, ~31 GB PLE; 100 GB free minimum, 120 GB+ recommended
+Storage:    NVMe strongly recommended; validation host used Crucial T710 NVMe
+```
+
+See `docs/resource-requirements.md` for the full caveats.
 
 ## 12. Interpretation
 

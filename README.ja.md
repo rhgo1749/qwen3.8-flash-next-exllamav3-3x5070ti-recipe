@@ -28,20 +28,43 @@
 - cache mode `8,4`
 - MTP 有効、draft token 3
 
-採用設定:
+レシピには 2 つの 3-GPU モードがあります。標準は **Performance mode**、GPU0 に数 GiB の空き VRAM を残す代替構成が **Headroom-preserving mode** です。
+
+Performance mode (`recipe/tabby_config.yml`):
+
+```text
+gpu_split                  = [15.0, 15.0, 14.0]
+cpu_moe_split_experts      = 208
+cpu_moe_threads            = 24
+ngram_ram                  = false
+
+draft_mode                 = mtp
+draft_gpu_split            = [0, 0, 3]
+draft_num_tokens           = 3
+dynamic_draft              = true
+draft_confidence           = 0.4
+```
+
+Headroom-preserving mode (`recipe/tabby_config.headroom.yml`):
 
 ```text
 gpu_split                  = [11.0, 15.0, 15.0]
 cpu_moe_split_experts      = 232
 cpu_moe_threads            = 24
+ngram_ram                  = false
 
 draft_mode                 = mtp
 draft_gpu_split            = [3, 0, 0]
 draft_num_tokens           = 3
+dynamic_draft              = true
+draft_confidence           = 0.4
+```
 
+共通 runtime policy:
+
+```text
 EXL3_MOE_CPU_SWAP          = 0
 EXL3_MOE_CPU_SPLIT_STATS   = /path/to/routing-stats.json
-
 EXL3_MGEMM_N_THRESHOLD     = 2048
 EXL3_INT8_GEMV             = 0
 ```
@@ -119,8 +142,11 @@ MTP1/2/3/4 を比較しました。
 
 ```yaml
 draft_num_tokens: 3
-dynamic_draft: false
+dynamic_draft: true
+draft_confidence: 0.4
 ```
+
+2026-09-24 の promoted resource contract（VRAM / RAM / NVMe と PLE RAM-vs-SSD A/B）は [`docs/resource-requirements.md`](docs/resource-requirements.md) を参照してください。
 
 ### 3. CPU MoE thread 数
 
@@ -225,13 +251,17 @@ CONCURRENCY=3 python3 bench/controlled_c3.py
 - promoted unfused GDN path で INT8 activation GEMV: controlled C3 で低速
 - 自然 traffic 1 回だけを proof とすること: controlled A/B で複数の apparent win が消えた
 
-## GPU0 headroom は意図的
+## 2 つの VRAM モード
+
+標準の **Performance mode** は `[15,15,14]` / CPU208 / MTP on GPU2 です。GPU0 に意図的な余裕が必要な場合は、`recipe/tabby_config.headroom.yml` の **Headroom-preserving mode** を使用します。
 
 ```yaml
 gpu_split: [11.0, 15.0, 15.0]
+cpu_moe_split_experts: 232
+draft_gpu_split: [3, 0, 0]
 ```
 
-最大 throughput 専用構成ではありません。GPU0 に数 GiB の VRAM headroom を意図的に残しているため、その GPU をディスプレイ接続や通常の desktop / OS workload にも使うシステムに向いています。GPU0 を完全に headless で使う場合は、11/15/15 をそのまま採用せず split を再調整する余地があります。
+このモードでも PLE は NVMe/page cache から stream し、dynamic MTP 0.4 を使用します。
 
 ## 再現性に関する注意
 

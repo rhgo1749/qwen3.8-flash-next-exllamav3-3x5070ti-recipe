@@ -22,15 +22,23 @@ The physical PCIe layout on the validation machine was x8 / x8 / x4. At PCIe 5.0
 
 The CPU/RAM tuning above is recorded because CPU-resident MoE work is material to this recipe. The benchmark did **not** use an unrestricted 9950X3D power profile. The serving runtime then used 24 threads for the main CPU-MoE worker and 16 threads for the MTP worker. These host values describe the tested machine rather than a guaranteed optimum for other AM5 memory controllers or DIMM kits.
 
-## Production profile
+## Production modes
+
+The recipe keeps two supported 3-GPU modes.
+
+| Mode | GPU split | CPU experts | GPU experts | MTP placement |
+| --- | --- | ---: | ---: | --- |
+| **Performance mode** | `[15,15,14]` | 208 | 304 | GPU2 `[0,0,3]` |
+| **Headroom-preserving mode** | `[11,15,15]` | 232 | 280 | GPU0 `[3,0,0]` |
+
+Common policy:
 
 ```text
-gpu_split              [11.0, 15.0, 15.0]
-CPU experts            232 / 512 per split layer
-GPU experts            280 / 512 per split layer
 main CPU-MoE threads   24
 MTP CPU-MoE threads    16
-draft tokens           3
+draft tokens           3 ceiling, dynamic
+MTP confidence         0.4
+PLE n-gram backing     NVMe/page cache (ngram_ram=false)
 cache mode             8,4
 cache size             524,288 tokens
 max context            262,144 tokens
@@ -38,6 +46,41 @@ MGEMM N threshold      2048
 INT8 activation GEMV   disabled
 static routing stats   enabled
 ```
+
+The capacity measurements below refer to **Performance mode**. Headroom-preserving mode remains available when GPU0 free VRAM is more important than the extra 24 GPU-resident experts per split layer.
+
+### 2026-09-24 capacity measurements
+
+- clean-load VRAM: **14,456 / 14,746 / 15,240 MiB** on the three RTX 5070 Ti cards
+- live container memory with `ngram_ram=false`: **33.52 GiB**
+- host memory at the same point: about **41 GiB used / 79 GiB available** on the validated 128 GB machine
+- model directory: about **88 GB**
+- PLE `ngram_embedding.safetensors`: **32,640,183,408 bytes (~31 GB)**
+
+For reproduction, **3 × 16 GB VRAM is validated**, **128 GB system RAM is validated**, **96 GB+ system RAM is the practical recommendation**, and **64 GB remains unvalidated/tight** with CPU208 plus the 24 GiB host reserve. For local storage, plan on **100 GB free minimum / 120 GB+ recommended** on NVMe. See `docs/resource-requirements.md`.
+
+### PLE RAM vs NVMe A/B
+
+With the rest of the profile held constant and dynamic MTP confidence 0.6 used to reduce draft-length noise, two-run 40k C3 averages were:
+
+| PLE backing | Average aggregate decode |
+| --- | ---: |
+| explicit RAM (`ngram_ram=true`) | **111.35 tok/s** |
+| NVMe/page-cache path (`ngram_ram=false`) | **110.4 tok/s** |
+
+The difference was under 1%, smaller than MTP acceptance variance. Cold-ish 40k prefill was also effectively tied at roughly 1.59k vs 1.61k tok/s. This is why the promoted profile now uses `ngram_ram=false` and spends the saved ~31 GB of fixed host RAM elsewhere.
+
+### Dynamic MTP A/B
+
+Short 142-token-prompt C3 steady-state:
+
+| Draft policy | Aggregate decode |
+| --- | ---: |
+| fixed MTP3 | **132.6 tok/s** |
+| dynamic MTP3, confidence 0.4 | **151.9 tok/s** |
+| dynamic MTP3, confidence 0.6 | **129.7 tok/s** |
+
+The 0.4 policy was about 14.6% above fixed MTP3 in this short-workload check. Long 40k runs remained dominated by run-to-run acceptance variance, so the promotion treats dynamic 0.4 as a mixed-workload policy rather than a universal long-context speedup.
 
 ## Progression
 
@@ -146,7 +189,7 @@ with good intervals above 110 tok/s.
 
 ### MTP4
 
-MTP4 required extra placement budget. It failed to load with the preferred display-headroom-preserving split until GPU0 allocation was raised, which sacrificed the headroom that profile was designed to preserve.
+MTP4 required extra placement budget. It failed to load with the preferred headroom-preserving split until GPU0 allocation was raised, which sacrificed the headroom that profile was designed to preserve.
 
 A real sample with the larger split showed roughly:
 

@@ -28,20 +28,43 @@ Validated host:
 - cache mode `8,4`
 - MTP enabled, 3 draft tokens
 
-The promoted configuration is:
+Two 3-GPU modes are kept in the recipe. **Performance mode** is the default; **headroom-preserving mode** trades some expert residency for several GiB of free VRAM on GPU0.
+
+Performance mode (`recipe/tabby_config.yml`):
+
+```text
+gpu_split                  = [15.0, 15.0, 14.0]
+cpu_moe_split_experts      = 208
+cpu_moe_threads            = 24
+ngram_ram                  = false
+
+draft_mode                 = mtp
+draft_gpu_split            = [0, 0, 3]
+draft_num_tokens           = 3
+dynamic_draft              = true
+draft_confidence           = 0.4
+```
+
+Headroom-preserving mode (`recipe/tabby_config.headroom.yml`):
 
 ```text
 gpu_split                  = [11.0, 15.0, 15.0]
 cpu_moe_split_experts      = 232
 cpu_moe_threads            = 24
+ngram_ram                  = false
 
 draft_mode                 = mtp
 draft_gpu_split            = [3, 0, 0]
 draft_num_tokens           = 3
+dynamic_draft              = true
+draft_confidence           = 0.4
+```
 
+Both modes use the same promoted runtime policy:
+
+```text
 EXL3_MOE_CPU_SWAP          = 0
 EXL3_MOE_CPU_SPLIT_STATS   = /path/to/routing-stats.json
-
 EXL3_MGEMM_N_THRESHOLD     = 2048
 EXL3_INT8_GEMV             = 0
 ```
@@ -64,6 +87,16 @@ MTP CPU-MoE         16 worker threads
 ```
 
 The 24/16 worker split is part of the serving recipe; the BIOS/RAM values are host context, not claimed universal optimums. In particular, do not assume the same VSOC or memory clock is stable on another 4-DIMM AM5 system.
+
+### Promoted VRAM / RAM / SSD requirements
+
+The 2026-09-24 promotion changed the capacity assumptions materially:
+
+- **VRAM:** 3 × 16 GB GPUs are the validated requirement. Clean-load usage was about **14,456 / 14,746 / 15,240 MiB** on the three RTX 5070 Ti cards.
+- **System RAM:** **128 GB is validated**. With PLE moved off explicit RAM residency, the live container used about **33.52 GiB** and the host showed about **41 GiB used**. **96 GB+ is the practical recommendation; 64 GB is unvalidated and considered tight** with CPU208 plus the 24 GiB host-memory reserve.
+- **SSD:** the local model directory is about **88 GB**, including a **31 GB PLE n-gram table**. Use **100 GB free minimum, 120 GB+ recommended**, on NVMe storage. The validation host used a Crucial T710 NVMe. PCIe 4.0 x4-class or better is a sensible target, but the minimum SSD class has not been independently validated here.
+
+See [`docs/resource-requirements.md`](docs/resource-requirements.md) for the measurements and caveats.
 
 ## Headline results
 
@@ -119,14 +152,17 @@ We tested MTP1, MTP2, MTP3 and MTP4.
 - MTP1 was competitive before the MTP expert placement was fixed, but lost its advantage afterward.
 - MTP2-hot did not raise acceptance enough. A real C3 sample reached only about **72.4 tok/s aggregate**.
 - **MTP3-hot** became the best production point.
-- MTP4 required more VRAM and either failed to load with the display-headroom-preserving split or consumed too much GPU0 headroom. In real traffic it also underperformed MTP3.
+- MTP4 required more VRAM and either failed to load with the headroom-preserving split or consumed too much GPU0 headroom. In real traffic it also underperformed MTP3.
 
-The promoted setting is therefore:
+MTP3 remains the promoted **ceiling**, but mixed-workload serving now uses confidence-calibrated dynamic truncation:
 
 ```yaml
 draft_num_tokens: 3
-dynamic_draft: false
+dynamic_draft: true
+draft_confidence: 0.4
 ```
+
+In a short 142-token-prompt C3 steady-state check, fixed MTP3 reached **132.6 tok/s aggregate**, dynamic 0.4 reached **151.9 tok/s**, and dynamic 0.6 reached **129.7 tok/s**. The 40k workload remained within much larger run-to-run acceptance variance, so this is a mixed-workload default rather than a claim that dynamic drafting always wins.
 
 ### 3. CPU MoE thread counts matter
 
@@ -261,8 +297,8 @@ These are worth documenting because most of them looked plausible before measure
 - base CPU-MoE 16 threads: slower
 - base CPU-MoE 32 threads: much slower
 - MTP CPU-MoE 24 threads: worse due to contention
-- CPU expert split 228/224: failed to fit at the validated 524k cache budget
-- `gpu_split [11,15.5,14.5]`: failed the module/VRAM boundary
+- older CPU expert split 228/224 attempts failed with the former `[11,15,15]` / GPU0-MTP placement; moving MTP to GPU2 and rebalancing to `[15,15,14]` later made **CPU208** fit
+- `gpu_split [11,15.5,14.5]`: failed the older module/VRAM boundary
 - `gpu_split [11,15.25,14.75]`: same problem
 - aggressive `MGEMM_N_THRESHOLD=0`: poor/noisy real-workload behavior
 - INT8 activation GEMV on the promoted unfused GDN path: slower in controlled C3
@@ -270,15 +306,21 @@ These are worth documenting because most of them looked plausible before measure
 
 See `docs/optimization-log.md` for the sequence and measurements.
 
-## GPU0 headroom is intentional
+## Current 3-GPU residency boundary
 
-The first GPU is deliberately limited to 11 GB in the split:
+The promoted split is now:
 
 ```yaml
-gpu_split: [11.0, 15.0, 15.0]
+gpu_split: [15.0, 15.0, 14.0]
+cpu_moe_split_experts: 208
+draft_gpu_split: [0, 0, 3]
 ```
 
-This is not a maximum-throughput-only setup. The split intentionally leaves several GiB free on GPU0, which is useful on systems where that GPU is display-attached or also serves normal desktop/OS workloads. A fully headless machine with no desktop workload on GPU0 should re-sweep the split instead of assuming 11/15/15 is globally optimal.
+This is the **performance mode**. The validation host drives the desktop from the iGPU, so all three RTX 5070 Ti cards can be dedicated to compute. A clean load used roughly 14.1 / 14.4 / 14.9 GiB of the nominal 16 GB boards, making the third device the tightest VRAM boundary.
+
+For systems that deliberately need spare VRAM on GPU0, use the separate **headroom-preserving mode** in `recipe/tabby_config.headroom.yml`: `[11,15,15]`, CPU232, with MTP placed on GPU0. It keeps the newer SSD PLE and dynamic-MTP policy while preserving the older VRAM headroom goal.
+
+A fourth RTX 5060 Ti is intentionally not part of the promoted server. On the tested PHB/no-P2P topology, adding it as a fourth model stage reduced throughput despite the extra residency. The live promotion therefore exposes only the three RTX 5070 Ti devices.
 
 ## Reproducibility notes
 
@@ -305,7 +347,8 @@ This is not a maximum-throughput-only setup. The split intentionally leaves seve
 │   └── optimization-log.md
 ├── recipe/
 │   ├── env.sh.example
-│   └── tabby_config.yml
+│   ├── tabby_config.yml                 # performance mode
+│   └── tabby_config.headroom.yml        # headroom-preserving mode
 └── tools/
     └── moe_hist_probe/
         └── sitecustomize.py
