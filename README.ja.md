@@ -95,6 +95,8 @@ hot placement 前:
 
 promotion 後の decode handoff profiling では **1.436 CPU expert assignments/token-row**、effective CPU hit 約 **14.4%** でした。
 
+> **Upstream の制約:** この結果は、固定 static profile が十分に初期化された dynamic policy より本質的に優れていることを示すものではありません。検証時点の **2026-09-23** では、workload-trained placement から開始した後も既存 upstream dynamic swapper を継続利用する `seed` mode を含む ExLlamaV3 PR [#315](https://github.com/turboderp-org/exllamav3/pull/315) はまだ open で、この recipe が使用した release/upstream path では利用できませんでした。そのため既存 upstream dynamic placement と custom static histogram placement は比較できましたが、**static と seeded-dynamic の公正な A/B は実施できていません。** upstream に取り込まれた後に `static` と `seed` を再比較する必要があります。
+
 MTP layer でも:
 
 ```text

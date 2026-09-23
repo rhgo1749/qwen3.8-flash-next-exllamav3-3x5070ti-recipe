@@ -99,6 +99,8 @@ ideal hot 280 experts resident:
 
 After promotion, decode handoff profiling measured about **1.436 CPU expert assignments/token-row**, approximately **14.4% effective CPU hit**, versus roughly **44%** before the static profile.
 
+> **Upstream limitation:** this recipe does **not** claim that a frozen static profile is inherently better than a well-seeded dynamic policy. At the time of validation (2026-09-23), ExLlamaV3 PR [#315](https://github.com/turboderp-org/exllamav3/pull/315), which adds precomputed expert-placement profiles including a `seed` mode that starts from a workload-trained placement and then continues with the upstream dynamic swapper, was still open and not available in the released/upstream path used here. Therefore this project could compare the existing upstream dynamic placement against the custom static histogram placement, but could **not** perform a fair static-vs-seeded-dynamic comparison. Re-test `static` vs `seed` once that capability lands upstream.
+
 The MTP layer had a similar problem:
 
 ```text

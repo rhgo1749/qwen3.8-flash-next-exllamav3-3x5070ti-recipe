@@ -29,6 +29,8 @@ That meant the machine was paying CPU/GPU handoff cost far more often than neces
 
 Collect expert popularity from representative workload, sort experts hot-to-cold per layer, freeze the permutation, and disable dynamic swapping during production.
 
+This was partly a consequence of the upstream capability available at the time. As of **2026-09-23**, ExLlamaV3 PR [#315](https://github.com/turboderp-org/exllamav3/pull/315) was still open. Its proposed precomputed-profile `seed` mode would start from a workload-trained expert placement and then continue with the existing upstream dynamic swapper, but that path was not available in the release/upstream version used for this experiment. Therefore the experiment compared the existing upstream dynamic policy against a custom frozen histogram placement; it did **not** establish whether static placement beats a properly seeded dynamic policy. If `seed` lands upstream, the fair follow-up is static-vs-seed A/B under the same workload, using decode CPU assignments and end-to-end throughput rather than prefill histogram alone.
+
 This became the dominant optimization.
 
 ## 2. MTP had the same problem

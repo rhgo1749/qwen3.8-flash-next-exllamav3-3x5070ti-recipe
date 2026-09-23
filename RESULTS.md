@@ -81,6 +81,8 @@ after:   1.436
 effective decode CPU hit: ~14.4%
 ```
 
+Upstream comparison caveat: as of **2026-09-23**, ExLlamaV3 PR [#315](https://github.com/turboderp-org/exllamav3/pull/315) was still open, so its precomputed-profile `seed` mode was not available in the release/upstream path used for these measurements. The repository therefore validates **existing upstream dynamic placement vs custom static histogram placement**, not static vs a workload-seeded dynamic policy. A future upstream `seed` implementation should be re-benchmarked against this static baseline before drawing a general conclusion about static vs dynamic placement.
+
 ### MTP histogram
 
 Before static hot placement:

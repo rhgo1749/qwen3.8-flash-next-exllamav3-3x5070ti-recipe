@@ -97,6 +97,8 @@ GPU에 hottest 280 experts 배치 시:
 
 실제 promotion 이후 decode handoff profiling에서는 **CPU expert assignment 1.436/token-row**, 즉 effective CPU hit 약 **14.4%**를 기록했습니다.
 
+> **Upstream 한계:** 이 결과는 고정된 static profile이 잘 초기화된 dynamic policy보다 본질적으로 우월하다는 뜻이 아닙니다. 검증 시점인 **2026-09-23**에는 workload-trained placement에서 시작한 뒤 기존 upstream dynamic swapper를 계속 사용하는 `seed` 모드를 포함한 ExLlamaV3 PR [#315](https://github.com/turboderp-org/exllamav3/pull/315)이 아직 open 상태였고, 이 레시피가 사용한 release/upstream 경로에서는 사용할 수 없었습니다. 따라서 본 프로젝트는 기존 upstream dynamic placement와 custom static histogram placement는 비교했지만, **static vs seeded-dynamic의 공정한 A/B는 수행하지 못했습니다.** 해당 기능이 upstream에 들어오면 `static`과 `seed`를 다시 비교해야 합니다.
+
 MTP layer도 비슷했습니다.
 
 ```text
