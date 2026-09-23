@@ -93,7 +93,7 @@ MTP CPU-MoE         16 worker threads
 2026-09-24 실측으로 용량 요구가 크게 바뀌었습니다.
 
 - **VRAM:** 검증된 요구사항은 **16 GB GPU ×3**입니다. clean load 직후 RTX 5070 Ti 3장의 사용량은 약 **14,456 / 14,746 / 15,240 MiB**였습니다.
-- **System RAM:** **128 GB는 실측 검증됨**. PLE를 명시적 RAM 상주에서 제외한 뒤 live container는 약 **33.52 GiB**, host 전체 used는 약 **41 GiB**였습니다. 따라서 **96 GB+를 실용 권장치**로 보고, **64 GB는 미검증이며 CPU208 + 24 GiB host reserve를 고려하면 빡빡한 용량**으로 봅니다.
+- **System RAM:** **128 GB는 실측 검증됨**. PLE를 명시적 RAM 상주에서 제외한 뒤 live container는 약 **33.52 GiB**, host 전체 used는 약 **41 GiB**였습니다. promoted host-memory reserve는 이제 **8 GiB**(`EXL3_HOST_MEM_RESERVE_MB=8192`)이므로 **64 GB를 권장 최소**, **96 GB를 여유 있는 권장**, **128 GB를 직접 검증된 구성**으로 봅니다. 다만 64 GB 시스템 자체에서의 직접 검증은 아직 하지 않았습니다.
 - **SSD:** local model directory가 약 **88 GB**, 그중 PLE n-gram table이 약 **31 GB**입니다. **빈 공간 100 GB 최소, 120 GB+ 권장**, NVMe 사용을 권장합니다. 검증 호스트는 Crucial T710 NVMe를 사용했습니다. PCIe 4.0 x4급 이상을 합리적 목표로 보지만, 최소 SSD 등급 자체를 별도로 A/B한 것은 아닙니다.
 
 세부 실측과 주의사항은 [`docs/resource-requirements.md`](docs/resource-requirements.md)에 정리했습니다.
@@ -255,6 +255,7 @@ export EXL3_MOE_CPU_SWAP=0
 export EXL3_MOE_CPU_SPLIT_STATS=/absolute/path/to/qwen38-routing-stats.json
 export EXL3_MGEMM_N_THRESHOLD=2048
 export EXL3_INT8_GEMV=0
+export EXL3_HOST_MEM_RESERVE_MB=8192
 
 # recipe/tabby_config.yml을 사용해 TabbyAPI / ExLlamaV3 서버 시작
 ```

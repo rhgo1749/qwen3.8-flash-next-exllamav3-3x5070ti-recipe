@@ -146,7 +146,7 @@ dynamic_draft: true
 draft_confidence: 0.4
 ```
 
-2026-09-24 の promoted resource contract（VRAM / RAM / NVMe と PLE RAM-vs-SSD A/B）は [`docs/resource-requirements.md`](docs/resource-requirements.md) を参照してください。
+2026-09-24 の promoted resource contract（VRAM / RAM / NVMe と PLE RAM-vs-SSD A/B）は [`docs/resource-requirements.md`](docs/resource-requirements.md) を参照してください。PLE を NVMe に移し host-memory reserve を 8 GiB (`EXL3_HOST_MEM_RESERVE_MB=8192`) にした構成では、**64 GB を推奨最小、96 GB を推奨、128 GB を実機検証済み**とします（64 GB 実機での直接検証はまだ未実施）。
 
 ### 3. CPU MoE thread 数
 
@@ -221,6 +221,7 @@ export EXL3_MOE_CPU_SWAP=0
 export EXL3_MOE_CPU_SPLIT_STATS=/absolute/path/to/qwen38-routing-stats.json
 export EXL3_MGEMM_N_THRESHOLD=2048
 export EXL3_INT8_GEMV=0
+export EXL3_HOST_MEM_RESERVE_MB=8192
 
 # recipe/tabby_config.yml で TabbyAPI / ExLlamaV3 server を起動
 ```

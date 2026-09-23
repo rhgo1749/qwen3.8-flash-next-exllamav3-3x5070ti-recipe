@@ -93,7 +93,7 @@ The 24/16 worker split is part of the serving recipe; the BIOS/RAM values are ho
 The 2026-09-24 promotion changed the capacity assumptions materially:
 
 - **VRAM:** 3 × 16 GB GPUs are the validated requirement. Clean-load usage was about **14,456 / 14,746 / 15,240 MiB** on the three RTX 5070 Ti cards.
-- **System RAM:** **128 GB is validated**. With PLE moved off explicit RAM residency, the live container used about **33.52 GiB** and the host showed about **41 GiB used**. **96 GB+ is the practical recommendation; 64 GB is unvalidated and considered tight** with CPU208 plus the 24 GiB host-memory reserve.
+- **System RAM:** **128 GB is validated**. With PLE moved off explicit RAM residency, the live container used about **33.52 GiB** and the host showed about **41 GiB used**. The promoted host-memory reserve is now **8 GiB** (`EXL3_HOST_MEM_RESERVE_MB=8192`), so **64 GB is the recommended minimum**, **96 GB is recommended with comfortable headroom**, and **128 GB remains the directly validated configuration**. The 64 GB class is not yet directly validated on a 64 GB machine.
 - **SSD:** the local model directory is about **88 GB**, including a **31 GB PLE n-gram table**. Use **100 GB free minimum, 120 GB+ recommended**, on NVMe storage. The validation host used a Crucial T710 NVMe. PCIe 4.0 x4-class or better is a sensible target, but the minimum SSD class has not been independently validated here.
 
 See [`docs/resource-requirements.md`](docs/resource-requirements.md) for the measurements and caveats.
@@ -259,6 +259,7 @@ export EXL3_MOE_CPU_SWAP=0
 export EXL3_MOE_CPU_SPLIT_STATS=/absolute/path/to/qwen38-routing-stats.json
 export EXL3_MGEMM_N_THRESHOLD=2048
 export EXL3_INT8_GEMV=0
+export EXL3_HOST_MEM_RESERVE_MB=8192
 
 # start TabbyAPI / your ExLlamaV3 server using recipe/tabby_config.yml
 ```

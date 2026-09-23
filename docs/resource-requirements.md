@@ -72,10 +72,11 @@ Capacity guidance:
 | System RAM | Status |
 | --- | --- |
 | **128 GB** | validated, comfortable |
-| **96 GB** | practical recommendation for reproducing this profile; not yet directly validated |
-| **64 GB** | not validated and considered tight for CPU208 + OS + a 24 GiB host-memory reserve |
+| **96 GB** | recommended with ample host/file-cache headroom |
+| **64 GB** | **recommended minimum** for the SSD-PLE profile with an 8 GiB host-memory reserve; not yet directly validated on a 64 GB machine |
+| **48 GB** | not recommended; transient allocations, pinned buffers, OS memory and page cache leave too little safety margin |
 
-The launcher used `EXL3_HOST_MEM_RESERVE_MB=24576`. Do not interpret the 33.52 GiB container number as proof that a 48/64 GB host is sufficient: CPU expert storage, pinned buffers, OS memory, file cache, transient load allocations, and the configured reserve all matter.
+The promoted reserve is now `EXL3_HOST_MEM_RESERVE_MB=8192` (8 GiB). This is an OOM safety margin, not model working memory. The change is justified by moving the ~31 GB PLE table out of explicit RAM residency: the live container used about 33.52 GiB with `ngram_ram: false`, leaving roughly 18 GiB of additional room on a nominal 64 GB host after model use plus the 8 GiB reserve. This **does not constitute direct 64 GB validation**; CPU expert storage, pinned buffers, OS memory, reclaimable file cache and transient load allocations still matter.
 
 ## SSD / model storage
 
@@ -139,9 +140,10 @@ Dynamic drafting does not add another model forward solely to make the decision;
 ```text
 Common
 GPU                     3 × RTX 5070 Ti 16 GB (validated)
-System RAM              128 GB validated; 96 GB+ recommended; 64 GB unvalidated/tight
+System RAM              64 GB recommended minimum; 96 GB recommended; 128 GB validated
 Local model storage     ~88 GB
 PLE table               ~31 GB, NVMe-backed (`ngram_ram: false`)
+Host memory reserve     8 GiB (`EXL3_HOST_MEM_RESERVE_MB=8192`)
 Free SSD space           100 GB minimum, 120 GB+ recommended
 Drafting                 MTP3, dynamic, confidence 0.4
 Shared KV cache          524,288 tokens, mode `8,4`

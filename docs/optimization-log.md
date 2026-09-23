@@ -252,7 +252,8 @@ Long 40k runs did not show a stable advantage beyond acceptance noise. The promo
 
 ```text
 VRAM:       3 x 16 GB validated; clean load 14,456 / 14,746 / 15,240 MiB
-RAM:        128 GB validated; 96 GB+ practical recommendation; 64 GB unvalidated/tight
+RAM:        64 GB recommended minimum; 96 GB recommended; 128 GB directly validated
+Host reserve: 8 GiB (`EXL3_HOST_MEM_RESERVE_MB=8192`); 64 GB host not yet directly validated
 SSD:        ~88 GB model directory, ~31 GB PLE; 100 GB free minimum, 120 GB+ recommended
 Storage:    NVMe strongly recommended; validation host used Crucial T710 NVMe
 ```

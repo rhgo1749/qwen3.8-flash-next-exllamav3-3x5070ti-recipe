@@ -57,7 +57,7 @@ The capacity measurements below refer to **Performance mode**. Headroom-preservi
 - model directory: about **88 GB**
 - PLE `ngram_embedding.safetensors`: **32,640,183,408 bytes (~31 GB)**
 
-For reproduction, **3 × 16 GB VRAM is validated**, **128 GB system RAM is validated**, **96 GB+ system RAM is the practical recommendation**, and **64 GB remains unvalidated/tight** with CPU208 plus the 24 GiB host reserve. For local storage, plan on **100 GB free minimum / 120 GB+ recommended** on NVMe. See `docs/resource-requirements.md`.
+For reproduction, **3 × 16 GB VRAM is validated**. With PLE on NVMe and the promoted **8 GiB host reserve** (`EXL3_HOST_MEM_RESERVE_MB=8192`), **64 GB system RAM is the recommended minimum**, **96 GB is recommended with comfortable headroom**, and **128 GB remains the directly validated capacity**. The 64 GB class is not yet directly validated on a 64 GB machine. For local storage, plan on **100 GB free minimum / 120 GB+ recommended** on NVMe. See `docs/resource-requirements.md`.
 
 ### PLE RAM vs NVMe A/B
 

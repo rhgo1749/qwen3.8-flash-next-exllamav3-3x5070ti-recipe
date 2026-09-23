@@ -146,7 +146,7 @@ dynamic_draft: true
 draft_confidence: 0.4
 ```
 
-2026-09-24 更新后的资源要求（VRAM / RAM / NVMe，以及 PLE RAM-vs-SSD A/B）请参见 [`docs/resource-requirements.md`](docs/resource-requirements.md)。
+2026-09-24 更新后的资源要求（VRAM / RAM / NVMe，以及 PLE RAM-vs-SSD A/B）请参见 [`docs/resource-requirements.md`](docs/resource-requirements.md)。在将 PLE 放到 NVMe，并把 host-memory reserve 调整为 8 GiB（`EXL3_HOST_MEM_RESERVE_MB=8192`）后，**64 GB 作为推荐最低容量，96 GB 为推荐容量，128 GB 为已直接验证配置**；64 GB 主机本身尚未做直接验证。
 
 ### 3. CPU MoE thread 数
 
@@ -221,6 +221,7 @@ export EXL3_MOE_CPU_SWAP=0
 export EXL3_MOE_CPU_SPLIT_STATS=/absolute/path/to/qwen38-routing-stats.json
 export EXL3_MGEMM_N_THRESHOLD=2048
 export EXL3_INT8_GEMV=0
+export EXL3_HOST_MEM_RESERVE_MB=8192
 
 # 使用 recipe/tabby_config.yml 启动 TabbyAPI / ExLlamaV3 server
 ```
