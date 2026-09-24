@@ -260,6 +260,14 @@ Storage:    NVMe strongly recommended; validation host used Crucial T710 NVMe
 
 See `docs/resource-requirements.md` for the full caveats.
 
+### 11.4 Forced cooperative-wide geometry rejected
+
+A 2026-09-24 live workload A/B tested `EXL3_MOE_COOP_WIDE=1` while keeping the promoted `layer` profile, MTP3, `EXL3_MGEMM_N_THRESHOLD=2048`, `EXL3_INT8_GEMV=0`, and `EXL3_MOE_PINNED_ARENA=1` otherwise unchanged.
+
+With cooperative-wide geometry forced, repeated real agent decodes landed in the **6.6–26.8 tok/s** range. After removing only the force-wide override and cleanly restarting the server, longer generations recovered repeatedly to **50.1–62.8 tok/s** (with additional short completions reaching 67–84 tok/s). Prefill remained healthy, including ~1.0–1.5k tok/s on the observed partially cached requests.
+
+This was a production-workload A/B rather than an identical synthetic prompt replay, so the exact ratio should not be treated as a universal benchmark. The magnitude and repeated recovery were nevertheless sufficient to reject forced wide geometry for the promoted recipe. **Leave `EXL3_MOE_COOP_WIDE` unset and allow ExLlamaV3's Blackwell geometry heuristic to choose automatically.**
+
 ## 12. Interpretation
 
 The original ~72–75 tok/s wall was not a GPU hardware ceiling.
