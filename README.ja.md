@@ -1,4 +1,4 @@
-# Multi-GPU ExLlamaV3 サービング・レシピ — 3× RTX 5070 Ti リファレンス
+# Qwen3.8-Flash-Next on 3× RTX 5070 Ti — ExLlamaV3 レシピ
 
 [English](README.md) | [한국어](README.ko.md) | **日本語** | [简体中文](README.zh-CN.md)
 
