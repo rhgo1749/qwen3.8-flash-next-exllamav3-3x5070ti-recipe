@@ -1,0 +1,301 @@
+# Multi-GPU ExLlamaV3 服务配方 — 3× RTX 5070 Ti 参考配置
+
+[English](README.md) | [한국어](README.ko.md) | [日本語](README.ja.md) | **简体中文**
+
+这是一个经过实测的 **Qwen3.8-Flash-Next EXL3 3.05 bpw** multi-GPU 参考方案，运行于 **3× RTX 5070 Ti 16 GB**，使用 **ExLlamaV3 1.5.1**。
+
+3×5070 Ti 的数值不是硬件要求，也不是通用“最佳设置”。真正可复用的是方法：先调查自己的 PCIe/VRAM topology，再找到可稳定加载的 split，随后重新测量 routing histogram、CPU-MoE、MTP placement 和 kernel policy，而不是直接复制参考机的数字。
+
+## TL;DR
+
+验证主机:
+
+- NVIDIA GeForce RTX 5070 Ti 16 GB ×3
+- 物理 PCIe 布局: PCIe 5.0 x8 / x8 / x4
+- 理论单向带宽约: 31.5 / 31.5 / 15.75 GB/s
+- 测试时 NVIDIA enumeration: GPU0 x8, GPU1 x4, GPU2 x8
+- PCIe 5.0 signaling rate: 每 lane 32.0 GT/s；所有 GPU 对均经过 `PHB`；无 NVLink
+- Ryzen 9 9950X3D
+- DDR5 128 GB (4 × 32 GB), DDR5-5800 CL40
+- FCLK 2000 MHz, VSOC ~1.05 V
+- BIOS CPU power limit ~110 W
+- NVIDIA driver 615.71.09
+- Linux 7.0.0-31-generic
+- ExLlamaV3 1.5.1
+- Qwen3.8-Flash-Next, EXL3 3.05 bpw
+- 最大 sequence length 262,144
+- shared cache budget 524,288 tokens
+- cache mode `8,4`
+- 启用 MTP，3 个 draft tokens
+
+仓库保留两种 3-GPU 模式。默认是 **Performance mode**；如果需要在 GPU0 上保留数 GiB 空闲 VRAM，则使用 **Headroom-preserving mode**。
+
+Performance mode (`recipe/tabby_config.yml`):
+
+```text
+gpu_split                  = [15.0, 15.0, 14.0]
+cpu_moe_split_experts      = 208
+cpu_moe_threads            = 24
+ngram_ram                  = false
+
+draft_mode                 = mtp
+draft_gpu_split            = [0, 0, 3]
+draft_num_tokens           = 3
+dynamic_draft              = true
+draft_confidence           = 0.4
+```
+
+Headroom-preserving mode (`recipe/tabby_config.headroom.yml`):
+
+```text
+gpu_split                  = [11.0, 15.0, 15.0]
+cpu_moe_split_experts      = 232
+cpu_moe_threads            = 24
+ngram_ram                  = false
+
+draft_mode                 = mtp
+draft_gpu_split            = [3, 0, 0]
+draft_num_tokens           = 3
+dynamic_draft              = true
+draft_confidence           = 0.4
+```
+
+两种模式共享以下 runtime policy:
+
+```text
+EXL3_MOE_CPU_SWAP          = 0
+EXL3_MOE_CPU_SPLIT_STATS   = /path/to/routing-stats.json
+EXL3_MGEMM_N_THRESHOLD     = 2048
+EXL3_INT8_GEMV             = 0
+```
+
+最大的性能提升来自 **基于 routing frequency 的 static hot-expert placement**。最终 kernel 选择还有一个更微妙的交互：在这套模型和 GPU 上，controlled C3 中最快的组合是 **让 2048-wide Gated DeltaNet bundle 保持 unfused，同时关闭 INT8 activation GEMV**。
+
+## 如何适配另一台 multi-GPU PC
+
+这个 ExLlamaV3 配置是多个 GPU 共同参与**一个 distributed runtime / model execution path**。因此，较慢的 GPU、较窄的 PCIe link 或不合理的 split 都可能影响整个 request 的吞吐。
+
+1. 记录每张 GPU 的 VRAM、PCIe generation/width、其他 VRAM 占用以及相对性能。
+2. 先使用保守的 `gpu_split`，为每张卡留出足够 headroom，确保模型稳定加载。
+3. 根据真实 VRAM residency 和 module boundary 调整 split。
+4. 重新测量 `cpu_moe_split_experts`，寻找 VRAM 与 CPU/PCIe 成本之间的平衡。
+5. 用自己的 workload 收集 routing histogram，不要直接复用其他机器的 expert ranking。
+6. 分别调整 main CPU-MoE 与 MTP worker 的 thread 数。
+7. 单独测试 MTP placement、draft length 与 acceptance。
+8. 固定 prompt、concurrency、cache state、output length 后再做 kernel A/B。
+9. 最后用真实 agent/API workload 复测，再决定是否 promotion。
+
+```bash
+nvidia-smi
+nvidia-smi topo -m
+nvidia-smi --query-gpu=index,name,memory.total,pci.bus_id --format=csv
+lspci -vv
+```
+
+与独立 GPU-per-lane serving 不同，这种 distributed runtime 的关键 trade-off 是：**慢 stage 或慢 link 可能影响整个 request，而不是只影响一个独立 lane。**
+
+### 测试时的 CPU / RAM 设置
+
+```text
+CPU                 Ryzen 9 9950X3D, 16C/32T
+BIOS CPU power cap  ~110 W
+RAM                 128 GB total, 4 × 32 GB
+DRAM                DDR5-5800 CL40
+FCLK                2000 MHz
+VSOC                ~1.05 V
+main CPU-MoE        24 worker threads
+MTP CPU-MoE         16 worker threads
+```
+
+24/16 worker split 是推理方案的一部分；BIOS / RAM 参数只是这台主机的实测条件，并不代表其他 AM5 系统上的通用最优值。
+
+## 主要结果
+
+初始实际工作负载下，3-request aggregate decode 看起来卡在 **72–75 tok/s** 左右。
+
+优化后:
+
+- 实际 mixed workload: 通常 **~94–101 tok/s aggregate C3**
+- 较好的实际区间: **110+ tok/s**
+- controlled C1: **平均 84.4 tok/s**
+- controlled C2: **平均 aggregate 104.5 tok/s**
+- controlled C3: **平均 aggregate 120.4 tok/s**
+- 实际工作负载中观察到的 historical peak: 约 **119 tok/s**
+
+controlled benchmark 与 production sustained throughput 是刻意分开描述的，因为固定 warm-cache benchmark 更容易控制 prompt 长度、prefix cache、draft acceptance 和 overlapping prefill 等变量。
+
+## 为什么这个配置更快
+
+### 1. Static hot-expert placement
+
+每个 split MoE layer 有 512 个 experts，其中 232 个在 CPU，280 个驻留 GPU。简单的 tail placement 导致过多 routing 落到 CPU。
+
+```text
+hot placement 之前:
+  CPU hit ~45.17%
+
+把最热的 280 experts 放到 GPU 后:
+  CPU hit ~12.06%
+  GPU hit ~87.94%
+```
+
+promotion 后的 decode handoff profiling 测得 **1.436 CPU expert assignments/token-row**，对应 effective CPU hit 约 **14.4%**。
+
+> **Upstream 限制：** 这一结果并不意味着固定的 static profile 本质上优于一个良好初始化的 dynamic policy。在验证时间点 **2026-09-23**，ExLlamaV3 PR [#315](https://github.com/turboderp-org/exllamav3/pull/315) 仍处于 open 状态；该 PR 提供包括 `seed` 模式在内的预计算 expert-placement profile，使系统能够从 workload-trained placement 开始，再继续使用现有 upstream dynamic swapper。这个能力在本 recipe 使用的 release/upstream 路径中还不可用。因此本项目比较了现有 upstream dynamic placement 与 custom static histogram placement，但**无法进行公平的 static vs seeded-dynamic A/B**。该能力进入 upstream 后，应重新比较 `static` 与 `seed`。
+
+MTP layer 也存在类似问题:
+
+```text
+MTP hot placement 前:  ~44.3% CPU hit
+MTP hot-placement 目标: ~7.5% CPU hit
+```
+
+后续还发现 layer 47 没有进入最初 histogram。该层未优化时 CPU hit 约 **42.8%**，hot placement 后估计约 **7.4%**。
+
+这是整个项目中收益最大的优化。
+
+### 2. MTP3 是实际最优点
+
+测试了 MTP1/2/3/4:
+
+- MTP1: 修复 MTP expert placement 之前有竞争力
+- MTP2-hot: acceptance 提升不足，real C3 约 **72.4 tok/s**
+- **MTP3-hot: 最终采用**
+- MTP4: VRAM/headroom 成本更高，实际 aggregate 也低于 MTP3
+
+```yaml
+draft_num_tokens: 3
+dynamic_draft: true
+draft_confidence: 0.4
+```
+
+2026-09-24 更新后的资源要求（VRAM / RAM / NVMe，以及 PLE RAM-vs-SSD A/B）请参见 [`docs/resource-requirements.md`](docs/resource-requirements.md)。在将 PLE 放到 NVMe，并把 host-memory reserve 调整为 8 GiB（`EXL3_HOST_MEM_RESERVE_MB=8192`）后，**64 GB 作为推荐最低容量，96 GB 为推荐容量，128 GB 为已直接验证配置**；64 GB 主机本身尚未做直接验证。
+
+### 3. CPU MoE thread 数
+
+Main 48-layer CPU-MoE worker:
+
+- 16 threads: 更慢
+- **24 threads: 最佳**
+- 32 threads: 明显更慢
+
+MTP one-layer worker:
+
+- **16 threads: 最佳**
+- 24 threads: 因 host-core contention 导致 C3 下降
+
+```text
+main CPU-MoE worker: 24 threads
+MTP CPU-MoE worker:  16 threads
+```
+
+### 4. 最终 kernel policy 并不是“INT8 一定更快”
+
+相关 text decode width:
+
+| Path | fusion heuristic 使用的 effective width |
+| --- | ---: |
+| attention QKV slices | 512 |
+| MoE gate/up | 640 |
+| Gated DeltaNet qkv+z slice | 2048 |
+
+ExLlamaV3 条件:
+
+```text
+fuse when out_features < EXL3_MGEMM_N_THRESHOLD
+```
+
+因此 **2048 vs 2049** 是一个很干净的边界测试。
+
+2×2 controlled C3:
+
+| GDN policy | INT8 activation GEMV | 3-run 平均 sum-TG |
+| --- | --- | ---: |
+| fused, threshold 2049 | on (`2`) | 112.3 tok/s |
+| unfused, threshold 2048 | on (`2`) | 109.4 tok/s |
+| **unfused, threshold 2048** | **off (`0`)** | **120.4 tok/s** |
+| fused, threshold 2049 | off (`0`) | 112.8 tok/s |
+
+最终采用:
+
+```bash
+EXL3_MGEMM_N_THRESHOLD=2048
+EXL3_INT8_GEMV=0
+```
+
+这并不意味着 raw non-INT8 GEMV kernel 本身快了 7–10%。MTP draft acceptance 也会变化，因此 end-to-end throughput 可能同时受到 kernel cost 和 numerical path 对 speculative acceptance 的影响。
+
+还有一个重要修正：在自然工作负载中，threshold 1024 一度看起来比 2048 快很多。但检查实际 tensor width 后发现，**1024 和 2048 在相关 hot path 上做出的 fusion decision 相同**，所以那次差异实际上是 workload noise。
+
+## Recipe
+
+```text
+recipe/tabby_config.yml
+recipe/env.sh.example
+tools/moe_hist_probe/sitecustomize.py
+```
+
+routing histogram probe 依赖 ExLlamaV3 内部 API。使用前请阅读 `docs/optimization-log.md`。
+
+## 最小启动策略
+
+```bash
+export EXL3_MOE_CPU_SWAP=0
+export EXL3_MOE_CPU_SPLIT_STATS=/absolute/path/to/qwen38-routing-stats.json
+export EXL3_MGEMM_N_THRESHOLD=2048
+export EXL3_INT8_GEMV=0
+export EXL3_HOST_MEM_RESERVE_MB=8192
+
+# 使用 recipe/tabby_config.yml 启动 TabbyAPI / ExLlamaV3 server
+```
+
+不要直接复制别人的 routing histogram。expert popularity 与 workload 有关，应当采集自己的代表性流量并做 A/B 验证。
+
+## Controlled benchmark
+
+```bash
+CONCURRENCY=1 python3 bench/controlled_c3.py
+CONCURRENCY=2 python3 bench/controlled_c3.py
+CONCURRENCY=3 python3 bench/controlled_c3.py
+```
+
+验证主机上的固定 prompt 约为 40k tokens，每个 request 输出 900 tokens，使用 greedy decoding。
+
+## 没有帮助的尝试
+
+- MTP2-hot: acceptance 提升不足
+- MTP4: VRAM/headroom 成本增加，实际 aggregate 更差
+- base CPU-MoE 16 threads: 更慢
+- base CPU-MoE 32 threads: 明显更慢
+- MTP CPU-MoE 24 threads: contention 导致退化
+- CPU expert split 228/224: 在 524k cache budget 下加载失败
+- `gpu_split [11,15.5,14.5]`: 卡在 module/VRAM boundary
+- `gpu_split [11,15.25,14.75]`: 同样失败
+- `MGEMM_N_THRESHOLD=0`: 实际 workload 表现差或噪声很大
+- promoted unfused GDN path 上的 INT8 activation GEMV: controlled C3 更慢
+- 把一次自然 traffic 当作 proof: 多个 apparent win 在 controlled A/B 中消失
+
+## 两种 VRAM 模式
+
+默认 **Performance mode** 使用 `[15,15,14]` / CPU208 / MTP on GPU2。需要在 GPU0 上主动保留空闲 VRAM 时，请使用 `recipe/tabby_config.headroom.yml` 中的 **Headroom-preserving mode**。
+
+```yaml
+gpu_split: [11.0, 15.0, 15.0]
+cpu_moe_split_experts: 232
+draft_gpu_split: [3, 0, 0]
+```
+
+该模式同样使用 NVMe/page cache PLE streaming 和 dynamic MTP 0.4。
+
+## 可复现性说明
+
+- 使用的是 Qwen3.8-Flash-Next 的 **EXL3 3.05 bpw conversion**
+- 仓库不包含 model weights
+- upstream model license 单独适用
+- static hot-expert ranking 与 workload 有关
+- CUDA/driver/runtime 更新可能改变 kernel break-even point
+- 更换 GPU 世代、EXL3 bpw、ExLlamaV3 版本、expert residency、cache size、batch/concurrency 后，应重新进行 controlled A/B
+
+## License
+
+本仓库代码与文档使用 MIT License。model weights 不包含在本仓库中。
