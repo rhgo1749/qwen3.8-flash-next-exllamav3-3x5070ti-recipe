@@ -1,4 +1,4 @@
-# Multi-GPU ExLlamaV3 服务配方 — 3× RTX 5070 Ti 参考配置
+# Qwen3.8-Flash-Next on 3× RTX 5070 Ti — ExLlamaV3 配置与优化方案
 
 [English](README.md) | [한국어](README.ko.md) | [日本語](README.ja.md) | **简体中文**
 
